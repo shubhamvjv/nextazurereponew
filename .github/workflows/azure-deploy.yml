@@ -1,0 +1,100 @@
+name: Build and Deploy to Azure Web App
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: mynewnextapp
+  AZURE_RESOURCE_GROUP: coe-platform-engineering-rg
+  NODE_VERSION: '20.x'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Build Next.js app
+      run: npm run build
+
+    - name: Create deployment package
+      run: |
+        cp package.json .next/standalone/
+        cp -r .next/static .next/standalone/.next/
+        if [ -d "public" ]; then cp -r public .next/standalone/; fi
+        cd .next/standalone
+        zip -r ../../deployment.zip .
+
+    - name: Upload artifact for deployment
+      uses: actions/upload-artifact@v4
+      with:
+        name: nextjs-app
+        path: deployment.zip
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: 'production'
+
+    steps:
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: nextjs-app
+
+    - name: Deploy to Azure Web App using ZipDeploy
+      run: |
+        apt-get update
+        apt-get install -y curl jq
+        
+        # Get publish profile
+        PUBLISH_PROFILE=$(az webapp deployment list-publishing-profiles \
+          --resource-group  \
+          --name  \
+          --query "[?publishMethod=='ZipDeploy'].{url:publishUrl,user:userName,password:userPWD}[0]" \
+          -o json)
+        
+        PUBLISH_URL=$(echo $PUBLISH_PROFILE | jq -r '.url')
+        PUBLISH_USER=$(echo $PUBLISH_PROFILE | jq -r '.user')
+        PUBLISH_PASS=$(echo $PUBLISH_PROFILE | jq -r '.password')
+        
+        # Deploy using curl with basic auth
+        curl -X POST \
+          -u "$PUBLISH_USER:$PUBLISH_PASS" \
+          -H "Content-Type: application/zip" \
+          --data-binary @deployment.zip \
+          "$PUBLISH_URL/api/zipdeploy"
+      continue-on-error: true
+
+    - name: Azure Login (as fallback)
+      uses: azure/login@v2
+      with:
+        creds: 
+      if: failure()
+
+    - name: Deploy using Azure CLI (fallback)
+      run: |
+        az webapp deployment source config-zip \
+          --resource-group  \
+          --name  \
+          --src deployment.zip
+      if: failure()
