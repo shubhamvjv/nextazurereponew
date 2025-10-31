@@ -80,4 +80,4 @@ jobs:
       continue-on-error: true
 
     - name: Logout from Azure
-      run: az logout
+      run: az logout 
